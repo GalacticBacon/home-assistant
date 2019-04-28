@@ -1,14 +1,14 @@
 """Config flow for ZHA."""
-import os
 from collections import OrderedDict
+import os
 
 import voluptuous as vol
 
 from homeassistant import config_entries
-from .helpers import check_zigpy_connection
-from .const import (
-    DOMAIN, CONF_RADIO_TYPE, CONF_USB_PATH, DEFAULT_DATABASE_NAME, RadioType
-)
+
+from .core.const import (
+    CONF_RADIO_TYPE, CONF_USB_PATH, DEFAULT_DATABASE_NAME, DOMAIN, RadioType)
+from .core.helpers import check_zigpy_connection
 
 
 @config_entries.HANDLERS.register(DOMAIN)

@@ -4,7 +4,8 @@ import logging
 from datetime import timedelta, datetime
 from typing import Any, Dict, List, Set, Optional  # noqa  pylint_disable=unused-import
 
-from homeassistant.core import HomeAssistant, callback, State, CoreState
+from homeassistant.core import (
+    HomeAssistant, callback, State, CoreState, valid_entity_id)
 from homeassistant.const import (
     EVENT_HOMEASSISTANT_START, EVENT_HOMEASSISTANT_STOP)
 import homeassistant.util.dt as dt_util
@@ -80,7 +81,8 @@ class RestoreStateData():
                 else:
                     data.last_states = {
                         item['state']['entity_id']: StoredState.from_dict(item)
-                        for item in stored_states}
+                        for item in stored_states
+                        if valid_entity_id(item['state']['entity_id'])}
                     _LOGGER.debug(
                         'Created cache with %s', list(data.last_states))
 
@@ -165,13 +167,19 @@ class RestoreStateData():
                 self.async_dump_states()))
 
     @callback
-    def async_register_entity(self, entity_id: str) -> None:
+    def async_restore_entity_added(self, entity_id: str) -> None:
         """Store this entity's state when hass is shutdown."""
         self.entity_ids.add(entity_id)
 
     @callback
-    def async_unregister_entity(self, entity_id: str) -> None:
+    def async_restore_entity_removed(self, entity_id: str) -> None:
         """Unregister this entity from saving state."""
+        # When an entity is being removed from hass, store its last state. This
+        # allows us to support state restoration if the entity is removed, then
+        # re-added while hass is still running.
+        self.last_states[entity_id] = StoredState(
+            self.hass.states.get(entity_id), dt_util.utcnow())
+
         self.entity_ids.remove(entity_id)
 
 
@@ -184,7 +192,7 @@ class RestoreEntity(Entity):
             super().async_added_to_hass(),
             RestoreStateData.async_get_instance(self.hass),
         )
-        data.async_register_entity(self.entity_id)
+        data.async_restore_entity_added(self.entity_id)
 
     async def async_will_remove_from_hass(self) -> None:
         """Run when entity will be removed from hass."""
@@ -192,7 +200,7 @@ class RestoreEntity(Entity):
             super().async_will_remove_from_hass(),
             RestoreStateData.async_get_instance(self.hass),
         )
-        data.async_unregister_entity(self.entity_id)
+        data.async_restore_entity_removed(self.entity_id)
 
     async def async_get_last_state(self) -> Optional[State]:
         """Get the entity state from the previous run."""

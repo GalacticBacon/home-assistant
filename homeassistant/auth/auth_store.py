@@ -1,4 +1,5 @@
 """Storage for auth models."""
+import asyncio
 from collections import OrderedDict
 from datetime import timedelta
 import hmac
@@ -10,13 +11,14 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.util import dt as dt_util
 
 from . import models
-from .const import GROUP_ID_ADMIN, GROUP_ID_READ_ONLY
-from .permissions import system_policies
+from .const import GROUP_ID_ADMIN, GROUP_ID_USER, GROUP_ID_READ_ONLY
+from .permissions import PermissionLookup, system_policies
 from .permissions.types import PolicyType  # noqa: F401
 
 STORAGE_VERSION = 1
 STORAGE_KEY = 'auth'
 GROUP_NAME_ADMIN = 'Administrators'
+GROUP_NAME_USER = "Users"
 GROUP_NAME_READ_ONLY = 'Read Only'
 
 
@@ -34,8 +36,10 @@ class AuthStore:
         self.hass = hass
         self._users = None  # type: Optional[Dict[str, models.User]]
         self._groups = None  # type: Optional[Dict[str, models.Group]]
+        self._perm_lookup = None  # type: Optional[PermissionLookup]
         self._store = hass.helpers.storage.Store(STORAGE_VERSION, STORAGE_KEY,
                                                  private=True)
+        self._lock = asyncio.Lock()
 
     async def async_get_groups(self) -> List[models.Group]:
         """Retrieve all users."""
@@ -94,6 +98,7 @@ class AuthStore:
             # Until we get group management, we just put everyone in the
             # same group.
             'groups': groups,
+            'perm_lookup': self._perm_lookup,
         }  # type: Dict[str, Any]
 
         if is_owner is not None:
@@ -269,12 +274,27 @@ class AuthStore:
 
     async def _async_load(self) -> None:
         """Load the users."""
-        data = await self._store.async_load()
+        async with self._lock:
+            if self._users is not None:
+                return
+            await self._async_load_task()
+
+    async def _async_load_task(self) -> None:
+        """Load the users."""
+        [ent_reg, dev_reg, data] = await asyncio.gather(
+            self.hass.helpers.entity_registry.async_get_registry(),
+            self.hass.helpers.device_registry.async_get_registry(),
+            self._store.async_load(),
+        )
 
         # Make sure that we're not overriding data if 2 loads happened at the
         # same time
         if self._users is not None:
             return
+
+        self._perm_lookup = perm_lookup = PermissionLookup(
+            ent_reg, dev_reg
+        )
 
         if data is None:
             self._set_defaults()
@@ -289,6 +309,7 @@ class AuthStore:
         # 1. Data from a recent version which has a single group without policy
         # 2. Data from old version which has no groups
         has_admin_group = False
+        has_user_group = False
         has_read_only_group = False
         group_without_policy = None
 
@@ -304,6 +325,13 @@ class AuthStore:
 
                 name = GROUP_NAME_ADMIN
                 policy = system_policies.ADMIN_POLICY
+                system_generated = True
+
+            elif group_dict['id'] == GROUP_ID_USER:
+                has_user_group = True
+
+                name = GROUP_NAME_USER
+                policy = system_policies.USER_POLICY
                 system_generated = True
 
             elif group_dict['id'] == GROUP_ID_READ_ONLY:
@@ -353,6 +381,10 @@ class AuthStore:
             read_only_group = _system_read_only_group()
             groups[read_only_group.id] = read_only_group
 
+        if not has_user_group:
+            user_group = _system_user_group()
+            groups[user_group.id] = user_group
+
         for user_dict in data['users']:
             # Collect the users group.
             user_groups = []
@@ -374,6 +406,7 @@ class AuthStore:
                 is_owner=user_dict['is_owner'],
                 is_active=user_dict['is_active'],
                 system_generated=user_dict['system_generated'],
+                perm_lookup=perm_lookup,
             )
 
         for cred_dict in data['credentials']:
@@ -466,7 +499,7 @@ class AuthStore:
                 'name': group.name
             }  # type: Dict[str, Any]
 
-            if group.id not in (GROUP_ID_READ_ONLY, GROUP_ID_ADMIN):
+            if not group.system_generated:
                 g_dict['policy'] = group.policy
 
             groups.append(g_dict)
@@ -519,6 +552,8 @@ class AuthStore:
         groups = OrderedDict()  # type: Dict[str, models.Group]
         admin_group = _system_admin_group()
         groups[admin_group.id] = admin_group
+        user_group = _system_user_group()
+        groups[user_group.id] = user_group
         read_only_group = _system_read_only_group()
         groups[read_only_group.id] = read_only_group
         self._groups = groups
@@ -530,6 +565,16 @@ def _system_admin_group() -> models.Group:
         name=GROUP_NAME_ADMIN,
         id=GROUP_ID_ADMIN,
         policy=system_policies.ADMIN_POLICY,
+        system_generated=True,
+    )
+
+
+def _system_user_group() -> models.Group:
+    """Create system user group."""
+    return models.Group(
+        name=GROUP_NAME_USER,
+        id=GROUP_ID_USER,
+        policy=system_policies.USER_POLICY,
         system_generated=True,
     )
 

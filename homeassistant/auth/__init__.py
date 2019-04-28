@@ -79,11 +79,6 @@ class AuthManager:
             self._async_finish_login_flow)
 
     @property
-    def active(self) -> bool:
-        """Return if any auth providers are registered."""
-        return bool(self._providers)
-
-    @property
     def support_legacy(self) -> bool:
         """
         Return if legacy_api_password auth providers are registered.
@@ -105,9 +100,21 @@ class AuthManager:
         """Return a list of available auth modules."""
         return list(self._mfa_modules.values())
 
+    def get_auth_provider(self, provider_type: str, provider_id: str) \
+            -> Optional[AuthProvider]:
+        """Return an auth provider, None if not found."""
+        return self._providers.get((provider_type, provider_id))
+
+    def get_auth_providers(self, provider_type: str) \
+            -> List[AuthProvider]:
+        """Return a List of auth provider of one type, Empty if not found."""
+        return [provider
+                for (p_type, _), provider in self._providers.items()
+                if p_type == provider_type]
+
     def get_auth_mfa_module(self, module_id: str) \
             -> Optional[MultiFactorAuthModule]:
-        """Return an multi-factor auth module, None if not found."""
+        """Return a multi-factor auth module, None if not found."""
         return self._mfa_modules.get(module_id)
 
     async def async_get_users(self) -> List[models.User]:
@@ -117,6 +124,11 @@ class AuthManager:
     async def async_get_user(self, user_id: str) -> Optional[models.User]:
         """Retrieve a user."""
         return await self._store.async_get_user(user_id)
+
+    async def async_get_owner(self) -> Optional[models.User]:
+        """Retrieve the owner."""
+        users = await self.async_get_users()
+        return next((user for user in users if user.is_owner), None)
 
     async def async_get_group(self, group_id: str) -> Optional[models.Group]:
         """Retrieve all groups."""
@@ -175,8 +187,7 @@ class AuthManager:
             user = await self.async_get_user_by_credentials(credentials)
             if user is None:
                 raise ValueError('Unable to find the user.')
-            else:
-                return user
+            return user
 
         auth_provider = self._async_get_auth_provider(credentials)
 
@@ -190,6 +201,7 @@ class AuthManager:
             credentials=credentials,
             name=info.name,
             is_active=info.is_active,
+            group_ids=[GROUP_ID_ADMIN],
         )
 
         self.hass.bus.async_fire(EVENT_USER_ADDED, {

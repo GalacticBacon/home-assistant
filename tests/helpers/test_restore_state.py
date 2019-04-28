@@ -6,7 +6,8 @@ from homeassistant.core import CoreState, State
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.restore_state import (
-    RestoreStateData, RestoreEntity, StoredState, DATA_RESTORE_STATE_TASK)
+    RestoreStateData, RestoreEntity, StoredState, DATA_RESTORE_STATE_TASK,
+    STORAGE_KEY)
 from homeassistant.util import dt as dt_util
 
 from asynctest import patch
@@ -197,4 +198,55 @@ async def test_load_error(hass):
                return_value=mock_coro(exception=HomeAssistantError)):
         state = await entity.async_get_last_state()
 
+    assert state is None
+
+
+async def test_state_saved_on_remove(hass):
+    """Test that we save entity state on removal."""
+    entity = RestoreEntity()
+    entity.hass = hass
+    entity.entity_id = 'input_boolean.b0'
+    await entity.async_added_to_hass()
+
+    hass.states.async_set('input_boolean.b0', 'on')
+
+    data = await RestoreStateData.async_get_instance(hass)
+
+    # No last states should currently be saved
+    assert not data.last_states
+
+    await entity.async_will_remove_from_hass()
+
+    # We should store the input boolean state when it is removed
+    assert data.last_states['input_boolean.b0'].state.state == 'on'
+
+
+async def test_restoring_invalid_entity_id(hass, hass_storage):
+    """Test restoring invalid entity IDs."""
+    entity = RestoreEntity()
+    entity.hass = hass
+    entity.entity_id = 'test.invalid__entity_id'
+    now = dt_util.utcnow().isoformat()
+    hass_storage[STORAGE_KEY] = {
+        'version': 1,
+        'key': STORAGE_KEY,
+        'data': [
+            {
+                'state': {
+                    'entity_id': 'test.invalid__entity_id',
+                    'state': 'off',
+                    'attributes': {},
+                    'last_changed': now,
+                    'last_updated': now,
+                    'context': {
+                        'id': '3c2243ff5f30447eb12e7348cfd5b8ff',
+                        'user_id': None
+                    }
+                },
+                'last_seen': dt_util.utcnow().isoformat()
+            }
+        ]
+    }
+
+    state = await entity.async_get_last_state()
     assert state is None
